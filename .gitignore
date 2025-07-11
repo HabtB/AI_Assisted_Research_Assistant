@@ -1,0 +1,27 @@
+# Ignore all files starting with 'test' in any directory
+test*
+**/test*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.egg-info/
+venv/
+.env
+
+# Node
+node_modules/
+*.log
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/ 
