@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useStartResearch, useResearchStatus, useResearchList } from './hooks/useResearch';
+import { DebugTest } from './components/DebugTest';
 
 function App() {
   const [query, setQuery] = useState('');
@@ -8,6 +9,9 @@ function App() {
   const startResearch = useStartResearch();
   const { data: statusData } = useResearchStatus(researchId);
   const { data: researchList } = useResearchList();
+
+  // Debug log to inspect data on every render
+  console.log('Rendered with researchList:', researchList);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -19,6 +23,7 @@ function App() {
         max_results: 5,
         include_summary: true,
         language: 'en',
+        source_types: ['academic'],  // Ensure valid enum
       });
       
       setResearchId(result.research.id);
@@ -33,7 +38,10 @@ function App() {
       <div className="max-w-4xl mx-auto">
         <h1 className="text-4xl font-bold text-gray-800 mb-8">Research Assistant</h1>
         
-        {/* Research Form */}
+        {/* Debug component for troubleshooting */}
+        <DebugTest />
+        
+        {/* Research Form - Always visible */}
         <form onSubmit={handleSubmit} className="mb-8">
           <div className="flex gap-2">
             <input
@@ -53,7 +61,7 @@ function App() {
           </div>
         </form>
 
-        {/* Status Display */}
+        {/* Status Display - Safer guard */}
         {statusData && (
           <div className="bg-white p-6 rounded-lg shadow mb-8">
             <h2 className="text-xl font-semibold mb-4">Current Research Status</h2>
@@ -64,8 +72,8 @@ function App() {
           </div>
         )}
 
-        {/* Research List */}
-        {researchList && (
+        {/* Research List - Enhanced guard with optional chaining */}
+        {researchList?.research_list?.length > 0 ? (
           <div className="bg-white p-6 rounded-lg shadow">
             <h2 className="text-xl font-semibold mb-4">Recent Research</h2>
             <div className="space-y-3">
@@ -79,6 +87,8 @@ function App() {
               ))}
             </div>
           </div>
+        ) : (
+          <p className="text-gray-500 mb-8">No recent research available yet. Start one above!</p>
         )}
       </div>
     </div>

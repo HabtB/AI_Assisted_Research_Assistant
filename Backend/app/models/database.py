@@ -61,5 +61,9 @@ class Source(Base):
     # Full content (if scraped)
     full_content = Column(Text, nullable=True)
     
+    # New fields for academic support
+    doi = Column(String, nullable=True, index=True)
+    citation_count = Column(Integer, default=0, index=True)
+    
     # Relationship back to research
     research = relationship("Research", back_populates="sources")

@@ -1,11 +1,11 @@
 import axios from "axios";
 import type { AxiosInstance, AxiosError } from "axios"; // <-- Use 'type' for type-only imports
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001/api/v1';
+const API_PREFIX = '/api/v1';  // Relative path; Vite proxies '/api' to backend
 
 // Create axios instance with default config
 export const apiClient: AxiosInstance = axios.create({
-  baseURL: API_URL,
+  baseURL: API_PREFIX,  // Now relative; assumes Vite proxy setup
   headers: {
     'Content-Type': 'application/json',
   },
@@ -33,7 +33,7 @@ apiClient.interceptors.response.use(
       // Server responded with error status
       console.error('API Error:', error.response.data);
     } else if (error.request) {
-      // Request made but no response
+      // Request made but no response (e.g., CORS/network)
       console.error('Network Error:', error.message);
     } else {
       // Something else happened
@@ -49,3 +49,16 @@ export interface ApiError {
   status?: number;
   details?: unknown;
 }
+
+// Helper for starting research (ensures valid payload)
+export async function startResearch(payload: any) {
+  // Fallback defaults to avoid validation errors
+  payload.source_types = payload.source_types || ['academic'];
+  payload.max_results = payload.max_results || 20;
+  payload.include_summary = payload.include_summary ?? true;
+  payload.language = payload.language || 'en';
+
+  return apiClient.post('/research/start', payload);
+}
+
+// Add other API helpers as needed, e.g., getResearch(id) { return apiClient.get(`/research/${id}`); }

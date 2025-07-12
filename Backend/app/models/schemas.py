@@ -52,6 +52,9 @@ class ResearchRequest(BaseModel):
         default=[SourceType.WEB], 
         description="Types of sources to search"
     )
+    date_from: Optional[str] = Field(None, description="Start date YYYY or YYYY-MM")
+    min_citations: Optional[int] = Field(0, ge=0)
+    sources: Optional[List[str]] = Field(None, description="List of sources: semantic_scholar, pubmed, arxiv, crossref")
 
 class ResearchUpdateRequest(BaseModel):
     """Request model for updating research status"""
@@ -174,7 +177,6 @@ class SortParams(BaseModel):
     sort_by: str = Field(default="created_at", description="Field to sort by")
     sort_order: str = Field(default="desc", pattern="^(asc|desc)$", description="Sort order")
 
-# Filter models
 class ResearchFilters(BaseModel):
     """Filters for research queries"""
     status: Optional[ResearchStatus] = None

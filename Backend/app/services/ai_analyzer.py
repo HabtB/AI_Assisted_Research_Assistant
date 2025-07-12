@@ -4,11 +4,12 @@ import os
 from dotenv import load_dotenv
 import logging
 import json
+import asyncio
 
 # AI Provider imports
 import openai
 import google.generativeai as genai
-from groq import Groq
+from groq import AsyncGroq  # Use async client for Groq
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -26,12 +27,22 @@ class AIProvider(ABC):
         """Check if provider is properly configured"""
         pass
 
+    @abstractmethod
+    async def refine_query(self, original_query: str) -> str:
+        """Refine the search query using AI"""
+        pass
+
+    @abstractmethod
+    async def generate_recommendations(self, query: str, analysis: Dict) -> List[str]:
+        """Generate follow-up recommendations based on analysis"""
+        pass
+
 class OpenAIProvider(AIProvider):
     def __init__(self):
         self.api_key = os.getenv("OPENAI_API_KEY")
+        self.client = None
         if self.api_key:
-            openai.api_key = self.api_key
-            self.client = openai.OpenAI(api_key=self.api_key)
+            self.client = openai.AsyncOpenAI(api_key=self.api_key)  # Use async client
         self.model = "gpt-4-turbo-preview"  # or "gpt-3.5-turbo" for cheaper
     
     def is_configured(self) -> bool:
@@ -63,7 +74,10 @@ Sources:
 Provide your analysis in JSON format with keys: summary, key_findings, themes, contradictions, recommendations.
 """
             
-            response = self.client.chat.completions.create(
+            if not self.client:
+                raise ValueError("OpenAI client not initialized")
+            
+            response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "You are a research analyst providing structured analysis."},
@@ -82,6 +96,34 @@ Provide your analysis in JSON format with keys: summary, key_findings, themes, c
             logger.error(f"OpenAI analysis failed: {str(e)}")
             return self._fallback_analysis(query, contents)
 
+    async def refine_query(self, original_query: str) -> str:
+        try:
+            prompt = f"Refine and expand this scientific research topic into an optimized search query with synonyms, sub-terms, and Boolean operators: {original_query}"
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.5,
+                max_tokens=100
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"OpenAI refine_query failed: {str(e)}")
+            return original_query
+
+    async def generate_recommendations(self, query: str, analysis: Dict) -> List[str]:
+        try:
+            prompt = f"Based on this analysis of scientific papers on '{query}', suggest 3-5 follow-up research topics, gaps, or related questions: {analysis.get('summary', '')}. List them concisely as bullets."
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=300
+            )
+            return [rec.strip() for rec in response.choices[0].message.content.split('\n') if rec.strip() and rec.startswith('-')]
+        except Exception as e:
+            logger.error(f"OpenAI generate_recommendations failed: {str(e)}")
+            return []
+
     def _fallback_analysis(self, query: str, contents: List[Dict]) -> Dict:
         """Fallback analysis if AI fails"""
         return {
@@ -95,6 +137,7 @@ Provide your analysis in JSON format with keys: summary, key_findings, themes, c
 class GeminiProvider(AIProvider):
     def __init__(self):
         self.api_key = os.getenv("GEMINI_API_KEY")
+        self.model = None
         if self.api_key:
             genai.configure(api_key=self.api_key)
             self.model = genai.GenerativeModel('gemini-1.5-flash')
@@ -127,7 +170,9 @@ Sources:
 Format your response as valid JSON with these exact keys: summary, key_findings (array), themes (array), contradictions (array), recommendations (array).
 """
             
-            response = self.model.generate_content(prompt)
+            # Gemini is sync; wrap in async
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: self.model.generate_content(prompt))
             
             # Parse response - Gemini might not always return valid JSON
             try:
@@ -151,6 +196,26 @@ Format your response as valid JSON with these exact keys: summary, key_findings 
             logger.error(f"Gemini analysis failed: {str(e)}")
             return self._fallback_analysis(query, contents)
     
+    async def refine_query(self, original_query: str) -> str:
+        try:
+            prompt = f"Refine and expand this scientific research topic into an optimized search query with synonyms, sub-terms, and Boolean operators: {original_query}"
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: self.model.generate_content(prompt))
+            return response.text.strip()
+        except Exception as e:
+            logger.error(f"Gemini refine_query failed: {str(e)}")
+            return original_query
+
+    async def generate_recommendations(self, query: str, analysis: Dict) -> List[str]:
+        try:
+            prompt = f"Based on this analysis of scientific papers on '{query}', suggest 3-5 follow-up research topics, gaps, or related questions: {analysis.get('summary', '')}. List them concisely as bullets."
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: self.model.generate_content(prompt))
+            return [rec.strip() for rec in response.text.split('\n') if rec.strip() and rec.startswith('-')]
+        except Exception as e:
+            logger.error(f"Gemini generate_recommendations failed: {str(e)}")
+            return []
+
     def _parse_gemini_response(self, text: str) -> Dict:
         """Parse non-JSON Gemini response"""
         # Basic parsing logic
@@ -174,8 +239,9 @@ Format your response as valid JSON with these exact keys: summary, key_findings 
 class GroqProvider(AIProvider):
     def __init__(self):
         self.api_key = os.getenv("GROQ_API_KEY")
+        self.client = None
         if self.api_key:
-            self.client = Groq(api_key=self.api_key)
+            self.client = AsyncGroq(api_key=self.api_key)
         self.model = "llama3-8b-8192"  # Fast and good quality
     
     def is_configured(self) -> bool:
@@ -204,7 +270,10 @@ Provide your analysis as valid JSON with these keys:
 - recommendations: array of strings (actionable insights)
 """
             
-            response = self.client.chat.completions.create(
+            if not self.client:
+                raise ValueError("Groq client not initialized")
+            
+            response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "You are a research analyst. Always respond with valid JSON."},
@@ -222,6 +291,34 @@ Provide your analysis as valid JSON with these keys:
             logger.error(f"Groq analysis failed: {str(e)}")
             return self._fallback_analysis(query, contents)
     
+    async def refine_query(self, original_query: str) -> str:
+        try:
+            prompt = f"Refine and expand this scientific research topic into an optimized search query with synonyms, sub-terms, and Boolean operators: {original_query}"
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.5,
+                max_tokens=100
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"Groq refine_query failed: {str(e)}")
+            return original_query
+
+    async def generate_recommendations(self, query: str, analysis: Dict) -> List[str]:
+        try:
+            prompt = f"Based on this analysis of scientific papers on '{query}', suggest 3-5 follow-up research topics, gaps, or related questions: {analysis.get('summary', '')}. List them concisely as bullets."
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=300
+            )
+            return [rec.strip() for rec in response.choices[0].message.content.split('\n') if rec.strip() and rec.startswith('-')]
+        except Exception as e:
+            logger.error(f"Groq generate_recommendations failed: {str(e)}")
+            return []
+
     def _fallback_analysis(self, query: str, contents: List[Dict]) -> Dict:
         return {
             "summary": f"Analysis of {len(contents)} sources about {query}.",
@@ -270,6 +367,34 @@ class AIAnalyzer:
         logger.info(f"Preferred provider {provider_name} not available. Using {fallback_name}")
         provider = self.providers[fallback_name]
         return await provider.analyze_content(query, contents)
+    
+    async def refine_query(self, original_query: str, provider_name: Optional[str] = None) -> str:
+        provider_name = provider_name or self.preferred_provider
+        available = self.get_available_providers()
+        if not available:
+            return original_query
+        
+        if provider_name in available:
+            provider = self.providers[provider_name]
+            return await provider.refine_query(original_query)
+        
+        fallback_name = available[0]
+        provider = self.providers[fallback_name]
+        return await provider.refine_query(original_query)
+    
+    async def generate_recommendations(self, query: str, analysis: Dict, provider_name: Optional[str] = None) -> List[str]:
+        provider_name = provider_name or self.preferred_provider
+        available = self.get_available_providers()
+        if not available:
+            return []
+        
+        if provider_name in available:
+            provider = self.providers[provider_name]
+            return await provider.generate_recommendations(query, analysis)
+        
+        fallback_name = available[0]
+        provider = self.providers[fallback_name]
+        return await provider.generate_recommendations(query, analysis)
     
     def _basic_analysis(self, query: str, contents: List[Dict]) -> Dict:
         """Basic analysis without AI"""

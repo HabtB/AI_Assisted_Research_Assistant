@@ -8,7 +8,7 @@ from app.models.database import Research, Source
 from app.tasks.celery_app import celery_app
 from app.models.schemas import (
     ResearchRequest, ResearchResponse, ResearchCreateResponse,
-    ResearchSummary, ResearchListResponse, HealthResponse
+    ResearchSummary, ResearchListResponse, HealthResponse, SourceType
 )
 from app.tasks.research_tasks import process_research_task
 
@@ -22,6 +22,10 @@ async def start_research(
 ):
     """Start a new research task in background"""
     try:
+        # Fallback for source_types validation
+        if not request.source_types or not all(isinstance(st, SourceType) for st in request.source_types):
+            request.source_types = [SourceType.ACADEMIC]  # Default to academic for new logic
+        
         # Create new research record
         research = Research(
             query=request.query,
@@ -31,7 +35,10 @@ async def start_research(
             language=request.language,
             metadata_info={
                 "source_types": [st.value for st in request.source_types],
-                "created_via": "api"
+                "created_via": "api",
+                "date_from": request.date_from,
+                "min_citations": request.min_citations,
+                "selected_sources": request.sources,
             }
         )
         
@@ -97,7 +104,8 @@ async def list_research(
     # Convert to summary models
     research_summaries = []
     for research in research_list:
-        source_count = db.query(Source).filter(Source.research_id == research.id).count()
+        # Temporary fix: count only by ID to avoid missing column issues
+        source_count = db.query(Source.id).filter(Source.research_id == research.id).count()
         summary = ResearchSummary.model_validate(research)
         summary.source_count = source_count
         research_summaries.append(summary)

@@ -3,8 +3,7 @@ from sqlalchemy.orm import Session
 from app.models.database import Research, Source
 from app.core.database import SessionLocal
 from app.tasks.celery_app import celery_app
-from app.services.web_scraper import WebScraper
-from app.services.content_processor import ContentProcessor
+from app.services.academic_fetcher import AcademicFetcher
 from app.services.ai_analyzer import AIAnalyzer
 from datetime import datetime
 import asyncio
@@ -18,8 +17,6 @@ logger = logging.getLogger(__name__)
 def process_research_task(self, research_id: int):
     """Process research task with real web scraping and AI analysis"""
     db = SessionLocal()
-    scraper = WebScraper()
-    processor = ContentProcessor()
     start_time = time.time()
     
     try:
@@ -37,69 +34,60 @@ def process_research_task(self, research_id: int):
         # Update task progress
         self.update_state(
             state='PROGRESS',
-            meta={'current': 10, 'total': 100, 'status': 'Searching web...'}
+            meta={'current': 10, 'total': 100, 'status': 'Refining query...'}
         )
         
-        # Search the web
-        search_results = asyncio.run(
-            scraper.search_web(research.query, num_results=5)
+        # Query Refiner Agent: Use AI to expand query
+        ai_analyzer = AIAnalyzer(preferred_provider=os.getenv("PREFERRED_AI_PROVIDER", "groq"))
+        refined_query = asyncio.run(ai_analyzer.refine_query(research.query))  # New method; see below
+        
+        self.update_state(state='PROGRESS', meta={'current': 20, 'total': 100, 'status': 'Fetching papers...'})
+        fetcher = AcademicFetcher()
+        papers = fetcher.fetch_papers(
+            refined_query or research.query,
+            research.max_results,
+            research.metadata_info.get("date_from"),
+            research.metadata_info.get("min_citations", 0),
+            research.metadata_info.get("selected_sources")
         )
         
-        logger.info(f"Found {len(search_results)} search results")
-        
-        # Process each result
         sources_data = []
-        total_results = len(search_results)
-        
-        for idx, result in enumerate(search_results):
-            progress = 20 + (idx / total_results) * 60
-            self.update_state(
-                state='PROGRESS',
-                meta={
-                    'current': progress,
-                    'total': 100,
-                    'status': f'Analyzing source {idx + 1}/{total_results}...'
-                }
-            )
+        for idx, paper in enumerate(papers):
+            progress = 30 + (idx / len(papers)) * 40
+            self.update_state(state='PROGRESS', meta={'current': progress, 'total': 100, 'status': f'Processing paper {idx + 1}/{len(papers)}...'})
             
-            # Scrape content
-            scraped_data = asyncio.run(
-                scraper.scrape_content(result['url'])
-            )
-            
-            # Process content
-            processed_data = processor.process_content(scraped_data)
-            
-            # Extract keywords
-            keywords = processor.extract_keywords(
-                scraped_data.get('content', ''), 
-                num_keywords=5
-            )
-            
+            # Basic processing (no scraping needed)
+            keywords = ai_analyzer.extract_keywords(paper.get('abstract', ''), num_keywords=5)  # Reuse if exists
+            max_citation = max(1, max(p['citation_count'] for p in papers))
             sources_data.append({
-                'url': processed_data['url'],
-                'title': processed_data['title'],
-                'summary': processed_data['summary'],
-                'relevance_score': processed_data['relevance_score'],
+                'url': paper.get('pdf_url') or f"https://doi.org/{paper.get('doi', '')}",
+                'title': paper['title'],
+                'summary': paper.get('abstract', '')[:500],  # Truncate
+                'relevance_score': paper['citation_count'] / max_citation,  # Normalize
+                'source_type': 'academic',  # Required
+                'credibility_score': 0.9,  # Required; high for academic APIs
+                'published_date': datetime(int(paper['year']), 1, 1) if paper.get('year') else None,  # Map year to date
+                'author': ', '.join(paper['authors'])[:200] if paper.get('authors') else None,  # Join list, truncate
+                'snippet': paper.get('abstract', '')[:200],  # Optional but useful
                 'metadata': {
-                    'word_count': processed_data['word_count'],
-                    'key_points': processed_data['key_points'],
+                    'authors': paper['authors'],
+                    'year': paper['year'],
+                    'venue': paper['venue'],
+                    'citation_count': paper['citation_count'],
                     'keywords': keywords,
-                    'scraped_at': datetime.utcnow().isoformat()
+                    'source_api': paper['source'],
                 },
-                'content': scraped_data.get('content', '')  # Keep content for AI analysis
+                'doi': paper.get('doi'),  # New field
+                'citation_count': paper['citation_count'],  # New field
             })
             
-            logger.info(f"Processed source: {processed_data['title']}")
+            logger.info(f"Processed source: {paper['title']}")
         
         # AI Analysis Phase
         self.update_state(
             state='PROGRESS',
-            meta={'current': 85, 'total': 100, 'status': 'Performing AI analysis...'}
+            meta={'current': 70, 'total': 100, 'status': 'Performing AI analysis...'}
         )
-        
-        # Initialize AI analyzer
-        ai_analyzer = AIAnalyzer(preferred_provider=os.getenv("PREFERRED_AI_PROVIDER", "groq"))
         
         # Check if AI is available
         available_providers = ai_analyzer.get_available_providers()
@@ -109,8 +97,7 @@ def process_research_task(self, research_id: int):
             # Prepare content for AI
             contents_for_ai = [{
                 'title': s['title'],
-                'url': s['url'],
-                'content': s.get('content', s['summary'])
+                'abstract': s['summary'],  # Use abstract
             } for s in sources_data]
             
             # Get AI analysis
@@ -122,12 +109,14 @@ def process_research_task(self, research_id: int):
             research.summary = ai_analysis.get('summary', 'Analysis completed')
             research.key_findings = ai_analysis.get('key_findings', [])[:5]  # Limit to 5 findings
             
+            # Add recommender
+            recommendations = asyncio.run(ai_analyzer.generate_recommendations(research.query, ai_analysis))
             metadata = {
                 'sources_analyzed': len(sources_data),
                 'ai_provider': ai_analysis.get('provider_used', 'none'),
                 'themes': ai_analysis.get('themes', []),
                 'contradictions': ai_analysis.get('contradictions', []),
-                'recommendations': ai_analysis.get('recommendations', []),
+                'recommendations': recommendations,
                 'processing_time': time.time() - start_time
             }
         else:
