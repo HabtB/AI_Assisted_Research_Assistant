@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from app.models.database import Research, Source
 from app.core.database import SessionLocal
 from app.tasks.celery_app import celery_app
-from app.services.academic_fetcher import AcademicFetcher
+from app.services.academic_fetcher import EnhancedAcademicFetcher
 from app.services.ai_analyzer import AIAnalyzer
 from datetime import datetime
 import asyncio
@@ -42,7 +42,7 @@ def process_research_task(self, research_id: int):
         refined_query = asyncio.run(ai_analyzer.refine_query(research.query))  # New method; see below
         
         self.update_state(state='PROGRESS', meta={'current': 20, 'total': 100, 'status': 'Fetching papers...'})
-        fetcher = AcademicFetcher()
+        fetcher = EnhancedAcademicFetcher()
         papers = fetcher.fetch_papers(
             refined_query or research.query,
             research.max_results,

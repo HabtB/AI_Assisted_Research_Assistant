@@ -1,64 +1,121 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { researchApi } from '../services/research';
-import type { ResearchRequest, ResearchStatusResponse, ResearchListResponse } from '../types/api';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { apiClient } from '../services/api.ts';  // Adjust path if needed
 
-// Hook to start new research
+// Existing hooks...
 export const useStartResearch = () => {
-  const queryClient = useQueryClient();
-
   return useMutation({
-    mutationFn: (data: ResearchRequest) => researchApi.startResearch(data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['research'] });
+    mutationFn: async (payload: any) => {
+      const { data } = await apiClient.post('/research/start', payload);
+      return data;
     },
   });
 };
 
-// Hook to get research by ID
-export const useResearch = (id: number | null) => {
+export const useResearchStatus = (id: number | null) => {
   return useQuery({
-    queryKey: ['research', id],
-    queryFn: () => researchApi.getResearch(id!),
+    queryKey: ['researchStatus', id],
+    queryFn: async () => {
+      if (!id) throw new Error('No ID');
+      const { data } = await apiClient.get(`/research/${id}/status`);
+      return data;
+    },
+    enabled: !!id,
+    refetchInterval: 5000,  // Poll for updates
+  });
+};
+
+export const useResearchList = () => {
+  return useQuery({
+    queryKey: ['researchList'],
+    queryFn: async () => {
+      const { data } = await apiClient.get('/research/');
+      return data;
+    },
+    refetchInterval: 10000,  // Refresh list periodically
+  });
+};
+
+// New hook for fetching full research details
+export const useResearchDetails = (id: number | null) => {
+  return useQuery({
+    queryKey: ['researchDetails', id],
+    queryFn: async () => {
+      if (!id) throw new Error('No ID provided');
+      const { data } = await apiClient.get(`/research/${id}`);
+      return data;
+    },
+    enabled: !!id,
+    refetchInterval: (query) => (query.state.data?.status === 'processing' ? 5000 : false),  // Poll only if processing
+  });
+};
+
+// Hook for getting enhanced research summary
+export const useResearchSummary = (id: number | null) => {
+  return useQuery({
+    queryKey: ['researchSummary', id],
+    queryFn: async () => {
+      if (!id) throw new Error('No ID provided');
+      const { data } = await apiClient.get(`/research/${id}/summary`);
+      return data;
+    },
     enabled: !!id,
   });
 };
 
-// Hook to get research status with polling
-export const useResearchStatus = (id: number | null, enabled: boolean = true) => {
-  return useQuery<ResearchStatusResponse>({
-    queryKey: ['research-status', id],
-    queryFn: () => researchApi.getResearchStatus(id!),
-    enabled: !!id && enabled,
-    refetchInterval: (query: unknown) => {
-      const lastData = (query as { data?: ResearchStatusResponse }).data;
-      if (lastData?.status === "pending" || lastData?.status === "in_progress") {
-        return 2000; // Poll every 2 seconds
-      }
-      return false; // Stop polling
+// Hook for filtering research results
+export const useFilteredResearch = () => {
+  return useMutation({
+    mutationFn: async ({
+      id,
+      filters
+    }: {
+      id: number;
+      filters: {
+        year_from?: number;
+        year_to?: number;
+        min_citations?: number;
+        venues?: string;
+        has_pdf?: boolean;
+      };
+    }) => {
+      const params = new URLSearchParams();
+      Object.entries(filters).forEach(([key, value]) => {
+        if (value !== undefined && value !== null) {
+          params.append(key, value.toString());
+        }
+      });
+      
+      const { data } = await apiClient.get(`/research/${id}/filter?${params}`);
+      return data;
     },
   });
 };
 
-// Hook to list research
-export const useResearchList = (params?: {
-  page?: number;
-  page_size?: number;
-  status?: string;
-}) => {
-  return useQuery<ResearchListResponse>({
-    queryKey: ['research', 'list', params],
-    queryFn: () => researchApi.listResearch(params),
-  });
-};
-
-// Hook to delete research
-export const useDeleteResearch = () => {
-  const queryClient = useQueryClient();
-
+// Hook for exporting research results
+export const useExportResearch = () => {
   return useMutation({
-    mutationFn: (id: number) => researchApi.deleteResearch(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['research'] });
+    mutationFn: async ({
+      id,
+      format
+    }: {
+      id: number;
+      format: 'csv' | 'json' | 'excel' | 'bibtex';
+    }) => {
+      const response = await apiClient.get(`/research/${id}/export?format=${format}`, {
+        responseType: 'blob',
+      });
+      
+      // Create download link
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `research_${id}_results.${format}`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      
+      return { success: true, format };
     },
   });
 };

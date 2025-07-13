@@ -170,6 +170,217 @@ async def get_research_status(
         "error_message": research.error_message
     }
 
+# New enhanced endpoints
+
+@router.get("/{research_id}/export")
+async def export_research(
+    research_id: int,
+    format: str = Query("json", description="Export format: csv, json, excel, bibtex"),
+    db: Session = Depends(get_db)
+):
+    """Export research results in various formats"""
+    from fastapi.responses import FileResponse
+    from app.services.academic_fetcher import EnhancedAcademicFetcher
+    import pandas as pd
+    import tempfile
+    import os
+    
+    research = db.query(Research).filter(Research.id == research_id).first()
+    if not research:
+        raise HTTPException(status_code=404, detail="Research not found")
+    
+    # Get sources data
+    sources = db.query(Source).filter(Source.research_id == research_id).all()
+    if not sources:
+        raise HTTPException(status_code=404, detail="No sources found for this research")
+    
+    # Convert to DataFrame format
+    papers_data = []
+    for source in sources:
+        papers_data.append({
+            'title': source.title,
+            'authors': source.metadata.get('authors', []) if source.metadata else [],
+            'year': source.metadata.get('year') if source.metadata else None,
+            'venue': source.metadata.get('venue') if source.metadata else None,
+            'abstract': source.summary,
+            'pdf_url': source.url if source.url.endswith('.pdf') else None,
+            'citation_count': source.citation_count or 0,
+            'source': source.metadata.get('source_api') if source.metadata else 'unknown',
+            'doi': source.doi,
+            'relevance_score': source.relevance_score
+        })
+    
+    df = pd.DataFrame(papers_data)
+    
+    # Create temporary file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{format}') as tmp_file:
+        filename = tmp_file.name
+    
+    try:
+        # Use EnhancedAcademicFetcher export functionality
+        fetcher = EnhancedAcademicFetcher()
+        fetcher.export_results(df, filename, format=format)
+        
+        # Return file
+        media_type = {
+            'csv': 'text/csv',
+            'json': 'application/json',
+            'excel': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'bibtex': 'application/x-bibtex'
+        }.get(format, 'application/octet-stream')
+        
+        return FileResponse(
+            filename,
+            media_type=media_type,
+            filename=f"research_{research_id}_results.{format}"
+        )
+    
+    except Exception as e:
+        # Clean up temp file on error
+        if os.path.exists(filename):
+            os.unlink(filename)
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+
+@router.get("/{research_id}/summary")
+async def get_research_summary(
+    research_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get enhanced summary report for research"""
+    from app.services.academic_fetcher import EnhancedAcademicFetcher
+    import pandas as pd
+    
+    research = db.query(Research).filter(Research.id == research_id).first()
+    if not research:
+        raise HTTPException(status_code=404, detail="Research not found")
+    
+    sources = db.query(Source).filter(Source.research_id == research_id).all()
+    if not sources:
+        return {"message": "No sources found for summary"}
+    
+    # Convert to DataFrame for analysis
+    papers_data = []
+    for source in sources:
+        papers_data.append({
+            'title': source.title,
+            'authors': source.metadata.get('authors', []) if source.metadata else [],
+            'year': source.metadata.get('year') if source.metadata else None,
+            'venue': source.metadata.get('venue') if source.metadata else None,
+            'citation_count': source.citation_count or 0,
+            'source': source.metadata.get('source_api') if source.metadata else 'unknown',
+            'has_pdf': bool(source.url and source.url.endswith('.pdf')),
+            'relevance_score': source.relevance_score or 0
+        })
+    
+    df = pd.DataFrame(papers_data)
+    
+    # Generate enhanced summary using EnhancedAcademicFetcher
+    fetcher = EnhancedAcademicFetcher()
+    summary_report = fetcher.create_summary_report(df)
+    
+    # Add research-specific information
+    summary_report.update({
+        'research_id': research_id,
+        'query': research.query,
+        'status': research.status,
+        'created_at': research.created_at,
+        'completed_at': research.completed_at
+    })
+    
+    return summary_report
+
+@router.get("/{research_id}/filter")
+async def filter_research_results(
+    research_id: int,
+    year_from: int = Query(None, description="Filter papers from this year"),
+    year_to: int = Query(None, description="Filter papers to this year"),
+    min_citations: int = Query(None, description="Minimum citation count"),
+    venues: str = Query(None, description="Comma-separated list of venues"),
+    has_pdf: bool = Query(None, description="Filter papers with PDF only"),
+    db: Session = Depends(get_db)
+):
+    """Filter research results by various criteria"""
+    from app.services.academic_fetcher import EnhancedAcademicFetcher
+    import pandas as pd
+    
+    research = db.query(Research).filter(Research.id == research_id).first()
+    if not research:
+        raise HTTPException(status_code=404, detail="Research not found")
+    
+    sources = db.query(Source).filter(Source.research_id == research_id).all()
+    if not sources:
+        return {"message": "No sources found to filter"}
+    
+    # Convert to DataFrame
+    papers_data = []
+    for source in sources:
+        papers_data.append({
+            'title': source.title,
+            'authors': source.metadata.get('authors', []) if source.metadata else [],
+            'year': source.metadata.get('year') if source.metadata else None,
+            'venue': source.metadata.get('venue') if source.metadata else None,
+            'abstract': source.summary,
+            'citation_count': source.citation_count or 0,
+            'source': source.metadata.get('source_api') if source.metadata else 'unknown',
+            'has_pdf': bool(source.url and source.url.endswith('.pdf')),
+            'relevance_score': source.relevance_score or 0,
+            'doi': source.doi,
+            'url': source.url
+        })
+    
+    df = pd.DataFrame(papers_data)
+    
+    # Apply filters using EnhancedAcademicFetcher
+    fetcher = EnhancedAcademicFetcher()
+    
+    # Prepare filter parameters
+    year_range = None
+    if year_from or year_to:
+        year_range = (year_from or 1900, year_to or 2030)
+    
+    venue_list = None
+    if venues:
+        venue_list = [v.strip() for v in venues.split(',')]
+    
+    # Apply filters
+    filtered_df = fetcher.filter_papers(
+        df,
+        year_range=year_range,
+        venues=venue_list,
+        min_citations=min_citations,
+        has_pdf=has_pdf
+    )
+    
+    # Convert back to response format
+    filtered_results = []
+    for _, paper in filtered_df.iterrows():
+        filtered_results.append({
+            'title': paper['title'],
+            'authors': paper['authors'],
+            'year': paper['year'],
+            'venue': paper['venue'],
+            'abstract': paper['abstract'],
+            'citation_count': paper['citation_count'],
+            'source': paper['source'],
+            'has_pdf': paper['has_pdf'],
+            'relevance_score': paper['relevance_score'],
+            'doi': paper['doi'],
+            'url': paper['url']
+        })
+    
+    return {
+        'research_id': research_id,
+        'total_results': len(df),
+        'filtered_results': len(filtered_results),
+        'filters_applied': {
+            'year_range': year_range,
+            'venues': venue_list,
+            'min_citations': min_citations,
+            'has_pdf': has_pdf
+        },
+        'results': filtered_results
+    }
+
 @celery_app.task
 def test_task():
     print("Test task executed!")
